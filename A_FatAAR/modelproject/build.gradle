@@ -1,0 +1,70 @@
+apply plugin: 'com.android.library'
+
+android {
+    compileSdkVersion 28
+
+    defaultConfig {
+        minSdkVersion 28
+        targetSdkVersion 28
+        versionCode 1
+        versionName "1.0"
+
+
+        sourceSets {
+            main.jniLibs.srcDirs = ['libs']
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+
+    defaultPublishConfig "Lib_ProdLib_Rel1Release"
+    //  publishNonDefault true
+
+    flavorDimensions "SDK_LIB", "SDK_TYPE"
+
+
+    configurations {
+
+        Lib_Prod1Lib_DevRelease
+        Lib_Prod1Lib_RelRelease
+        Lib_Prod2Lib_DevRelease
+        Lib_Prod2Lib_RelRelease
+
+        artifacts.add("Lib_Prod1Lib_DevRelease", file('\\build\\outputs\\aar/modelproject-Lib_Prod1-Lib_Dev-release.aar'))
+        artifacts.add("Lib_Prod1Lib_RelRelease", file('\\build\\outputs\\aar/modelproject-Lib_Prod1-Lib_Rel-release.aar'))
+        artifacts.add("Lib_Prod2Lib_DevRelease", file('\\build\\outputs\\aar/modelproject-Lib_Prod2-Lib_Dev-release.aar'))
+        artifacts.add("Lib_Prod2Lib_RelRelease", file('\\build\\outputs\\aar/modelproject-Lib_Prod2-Lib_Rel-release.aar'))
+    }
+
+
+    productFlavors{
+        Lib_Rel{
+            buildConfigField "boolean", "SDK_RELEASE", "true"       //管控 Java 层配置参数
+            externalNativeBuild.cmake.cppFlags  "-DSDK_REL=TRUE"   //管控 CMAKE 宏定义
+            dimension "SDK_TYPE"
+        }
+        Lib_Dev{
+            buildConfigField "boolean", "SDK_RELEASE", "false"
+            externalNativeBuild.cmake.cppFlags  "-DSDK_REL=FALSE"
+            dimension "SDK_TYPE"
+        }
+        // 针对不同的硬件与供应商进行 代码与SO的加载
+        Lib_Prod1{
+            dimension "SDK_LIB"
+        }
+        Lib_Prod2{
+            dimension "SDK_LIB"
+        }
+    }
+}
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+
+}

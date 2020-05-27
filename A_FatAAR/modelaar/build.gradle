@@ -1,0 +1,91 @@
+apply plugin: 'com.android.library'
+apply from: 'fat-aar-huan.gradle'
+
+
+def buildTime(){
+    return new Date().format("MMdd", TimeZone.getTimeZone("UTC"))
+}
+
+android {
+    compileSdkVersion 28
+    defaultConfig {
+        minSdkVersion 28
+        targetSdkVersion 28
+        versionCode 1
+        versionName "1.0"
+
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    flavorDimensions "SDK_HUAN"
+    productFlavors{
+
+        SDK_Product1{
+            dependencies{
+                embeddedProj project(path:":modelproject",configuration:"Lib_Prod1Lib_RelRelease")
+            }
+        }
+
+        SDK_Product1NoLocal{
+            dependencies{
+                embeddedProj project(path:":modelproject",configuration:"Lib_Prod1Lib_RelRelease")
+            }
+        }
+
+        SDK_Product2Local{
+            dependencies{
+                embeddedProj project(path:":modelproject",configuration:"Lib_Prod2Lib_DevRelease")
+            }
+        }
+    }
+
+    //修改生成AAR的名字
+    libraryVariants.all{ variant ->
+
+
+
+
+        if (variant.buildType.name == 'release') {
+
+            println "huan " + variant.productFlavors.name
+
+            if (variant.buildType.name == 'release') {
+                if ( "SDK_Product1".contentEquals(variant.productFlavors.name) ){
+                    variant.outputs.all {
+                       outputFileName = "modelFat_SDK_Product1_${buildTime()}.aar"
+                    }
+                }else if("SDK_Product1NoLocal".contentEquals(variant.productFlavors.name) ){
+                    variant.outputs.all {
+                        outputFileName = "modelFat_SDK_Product1NoLocal_${buildTime()}.aar"
+                    }
+                }else if( "SDK_Product2Local".contentEquals(variant.productFlavors.name) ){
+                    variant.outputs.all {
+                        outputFileName = "modelFat_SDK_Product2Local_${buildTime()}.aar"
+                    }
+                }else {
+                    variant.outputs.all{
+                        outputFileName = "modelFat_${buildTime()}.aar"
+                    }
+               }
+            }
+
+           /* variant.outputs.all {
+                outputFileName = "modelFat_${buildTime()}.aar"
+            }*/
+        }
+    }
+}
+
+
+dependencies {
+    //对于AAR工程,只需依赖一次
+   // embeddedAAR1 project(path: ':modellocal-release',configuration: 'default')
+    embeddedAar1 project(path: ":modellocal-release",configuration: "default")
+}
+

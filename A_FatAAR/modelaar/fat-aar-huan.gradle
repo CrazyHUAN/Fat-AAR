@@ -1,0 +1,645 @@
+import com.android.annotations.NonNull
+import com.android.manifmerger.ManifestMerger2
+import com.android.manifmerger.ManifestMerger2.Invoker
+import com.android.manifmerger.ManifestMerger2.MergeType
+import com.android.manifmerger.MergingReport
+import com.android.manifmerger.PlaceholderEncoder
+import com.android.manifmerger.XmlDocument
+import com.android.utils.ILogger
+import com.google.common.base.Charsets
+import com.google.common.io.Files
+import org.gradle.util.GradleVersion
+
+
+buildscript {
+    repositories {
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url "https://maven.aliyun.com/repository/jcenter" }
+    }
+
+    dependencies {
+        classpath 'com.android.tools.build:manifest-merger:25.3.2'
+        // classpath 'com.android.tools.build:manifest-merger:26.0.0'
+    }
+}
+
+
+//--适配工程 依据Product自定义
+
+//针对不同的版本配置依赖
+configurations {
+    embeddedProj
+    embeddedAar1
+    embeddedAar2
+}
+
+def customDependenciesProj(ProductName,configuration) {
+    log "** Proj custom -- p: "+ProductName + " c: "+configuration
+
+    if ("SDK_Product1".contentEquals(ProductName)){
+        return configuration.find("Prod1")
+    }else if ("SDK_Product1NoLocal".contentEquals(ProductName)){
+        return configuration.find("Prod1")
+    }else if("SDK_Product2Local".contentEquals(ProductName)){
+        return configuration.find("Prod2")
+    }
+    else {
+        new Exception("Custom Proj Error !!")
+    }
+    return false
+}
+
+def customDependenciesAar(product,type){
+    log "** AAR custom --p: "+product//+"  t: "+type
+    def aarList = new ArrayList();
+    if ( "SDK_Product1".contentEquals(product) || "SDK_Product2Local".contentEquals(product))
+    {
+        aarList.addAll(configurations.embeddedAar1.resolvedConfiguration.firstLevelModuleDependencies)
+    }else {
+        new Exception("Custom AAR Error !!");
+    }
+    return aarList
+}
+
+//--适配工程 自定义
+
+
+ext {
+    gradleVersionStr = GradleVersion.current().getVersion()
+    gradleApiVersion = gradleVersionStr.substring(0, gradleVersionStr.lastIndexOf(".")).toFloat()
+
+    // gradle 版本号 //不同的Gradle 中间文件路径不同
+    log("Gradle Version: $gradleVersionStr")
+    // R文件 生成Jar名
+    archiveNameOfRClasses = "rs_R.jar"
+
+    // Build 目录
+    build_dir = buildDir.path.replace(File.separator, '/')
+    log("build_dir == $build_dir")
+
+    // 工程目录
+    //root_dir = project.rootDir.absolutePath.replace(File.separator, '/')
+    //println tag+"root_dir ====$root_dir"
+
+    //fat 中间临时文件目录
+    dir_fataar = "$build_dir/fat-aar"
+    dir_R_src = "$dir_fataar/RJava"
+    dir_R_class = "$dir_fataar/RClass"
+}
+
+// 调试 LOG
+def log(_log){
+    if(true) println "[FAT-AAR] "+_log
+}
+
+//清理 fataar 文件夹
+task(dependsOn: clean){
+    doLast{
+        delete dir_fataar
+    }
+}
+
+//Gradle的构建生命周期分为三部分，初始化、配置和执行阶段
+
+afterEvaluate {
+    //没找到直接获取 当前assembleProductFlavors 的方式,只好遍历都配置一遍
+    android.productFlavors.all({product->
+
+        android.buildTypes.each({ type->
+
+            // 获取SDK产品与构建类型
+            def productName = product.name.capitalize()
+            def typeName = type.name.capitalize()
+            def productType = productName+typeName
+
+            println ""
+            log("======== ProductName  "+productName +" - TypeName "+typeName+" ========")
+
+            // 获取所有工程式Model的依赖
+            def depsProj = new ArrayList(configurations.embeddedProj.resolvedConfiguration.firstLevelModuleDependencies)
+            log("depsProj size " + depsProj.size())
+            log("depsProj: " + depsProj)
+
+            def taskAAR = tasks.getByName('assemble'+ productType)
+
+            def dependencies = new ArrayList()
+
+            depsProj.reverseEach {
+
+                // log("depsProject:11  " +it)
+                // log("depsProject:22  " +it.name)
+                // log("depsProject:22  " +it.moduleName)
+                // log("depsProject:22  " +it.configuration)
+                // log("depsProject:44  " +it.getModuleArtifacts())
+
+                def isProductDeps = customDependenciesProj(productName,it.configuration)
+                if (isProductDeps){
+                    // 测试发现 Gradle对于配置configurations不会自动生成AAR,(default可以)
+                    // 所以需要配置 assemble 依赖强制生成AAR,这导致需要两次点击才是所需要的版本
+                    def projModule = project(':'+it.moduleName)
+                    def projAssemble ='assemble'+it.configuration
+                    def taskAssemble =  projModule.tasks.getByName(projAssemble);
+                    log("-- depsProject  "+projModule+" >>Module "+ taskAssemble+"--AAR "+taskAAR)
+                    taskAAR.dependsOn taskAssemble
+
+                    //将对应AAR添加到依赖包中
+                    dependencies.add(it)
+                }
+            }
+
+            log("ModulesProj size " + dependencies.size())
+            log("ModulesProj: " + dependencies)
+
+            def depsAar = customDependenciesAar(productName,typeName)
+
+            dependencies.addAll(depsAar)
+
+            log("ModulesAar size " + depsAar.size())
+            log("ModulesAar: " + depsAar)
+            log("deps Size "+dependencies.size())
+
+            // Jar 包集合
+            def embeddedJars = new ArrayList()
+            // AAR 解压路径
+            def embeddedAarDirs = new ArrayList()
+
+            dependencies.reverseEach {
+                //log("dependencies 11 " +it)
+                // log("dependencies 22 " +it.name)
+                // log("dependencies 33 " +it.moduleName)
+                log("-- dependencies Artifacts " +it.moduleArtifacts)
+
+                //a02 遍历每一个模块
+                it.moduleArtifacts.each { artifact ->
+                    log("-- -- AAR File: $artifact  path: $artifact.file.absolutePath")
+                    structureAAR(productName,artifact,embeddedAarDirs,embeddedJars);
+                }
+            }
+
+            //插入Gradle构建流程,定义编译中间文件夹路径
+            //可根据 Gradle 不同来客制化
+
+            //R.jar 用于重新生成中间R
+            def dir_R_jar = "$build_dir/intermediates/compile_only_not_namespaced_r_class_jar/$productType/generate${productType}RFile"
+
+            //calss 目录
+            def dir_classs= "$build_dir/intermediates/javac/$productType/compile${productType}JavaWithJavac/classes"
+
+            // manifest文件 aapt
+            def dir_manifest_aapt = "$build_dir/intermediates/aapt_friendly_merged_manifests/$productType/aapt"
+            def dir_manifest = "$build_dir/intermediates/library_manifest/$productType"
+            //jar
+            def dir_exter_jar = "$build_dir/intermediates/packaged-classes/$productType/libs"
+
+            if (gradleApiVersion > 5.1){
+                //Gradle不同版本适配,
+            }
+
+            log("dir_R_jar  "+dir_R_jar)
+            log("dir_classs "+dir_classs)
+            log("dir_manifest_aapt "+dir_manifest_aapt)
+            log("dir_manifest "+dir_manifest)
+            log("dir_exter_jar "+dir_exter_jar)
+
+            if (dependencies.size() > 0) {
+
+                //1 配置 Assets
+                def taskEmbedAssets ="taskEmbedAssets"+ productType
+                tasks.maybeCreate(taskEmbedAssets).doLast {
+                    log("-->Task  "+ taskEmbedAssets)
+                    embeddedAarDirs.each { aarPath ->
+                        log "-->AAR Assets: $aarPath/assets"
+                        // 合并assets内容的Task很简单，只需将子模块解压后的assets目录添加到主工程的assets.srcDirs中即可
+                        android.sourceSets.main.assets.srcDirs += file("$aarPath/assets").getAbsoluteFile()
+                    }
+                }
+                //因为借助于主工程 android.sourceSets.main 的标记,所以插入到generate阶段
+                tasks.getByName("generate${productType}Assets").dependsOn taskEmbedAssets
+                log("Embedded --> "+ tasks.getByName("generate${productType}Assets"))
+
+                //2 配置 Resources
+                def taskEmbedResources ="taskEmbedResources"+ productType
+                tasks.maybeCreate(taskEmbedResources).doLast {
+                    log("-->Task  "+ taskEmbedResources)
+                    embeddedAarDirs.each { aarPath ->
+                        log "-->AAR Resource: $aarPath/res"
+                        android.sourceSets.main.res.srcDirs += file("$aarPath/res").getAbsoluteFile()
+                    }
+                }
+                tasks.getByName("generate${productType}Resources").dependsOn taskEmbedResources
+                log("Embedded --> "+ tasks.getByName("generate${productType}Resources"))
+
+
+                //3 配置 JNI so
+                def taskEmbedJniLibs ="taskEmbedJniLibs"+ productType
+                tasks.maybeCreate(taskEmbedJniLibs).doLast {
+                    log("-->Task  "+ taskEmbedJniLibs)
+                    embeddedAarDirs.each { aarPath ->
+                        log "-->AAR JniLibs: $aarPath/jni"
+                        android.sourceSets.main.jniLibs.srcDirs += file("$aarPath/jni")
+                    }
+                }
+                tasks.getByName("merge${productType}JniLibFolders").dependsOn taskEmbedJniLibs
+                log("Embedded --> "+ tasks.getByName("merge${productType}JniLibFolders"))
+
+                //4 合并 Manifests
+                def taskEmbedManifests ="taskEmbedManifests"+ productType
+                tasks.maybeCreate(taskEmbedManifests).doLast {
+                    log("-->Task  "+ taskEmbedManifests)
+                    mergeManifestFile(dir_fataar,dir_manifest,dir_manifest_aapt,embeddedAarDirs)
+
+                }
+                tasks.getByName("bundle${productType}Aar").dependsOn taskEmbedManifests
+                tasks.getByName(taskEmbedManifests).dependsOn  tasks.getByName("process${productType}Manifest")
+                log("Embedded --> "+ tasks.getByName("process${productType}Manifest"))
+
+              /*  //5 合并 proguard files 混淆文件
+                def taskEmbedProguard ="taskEmbedProguard"+ productType
+                tasks.maybeCreate(taskEmbedProguard).doLast {
+
+                    log("-->Task  "+ taskEmbedProguard)
+                    //  遍历aar解压目录，将子模块的proguard.txt文件内容追加到主工程build目录内的proguard.txt中
+                    def proguardRelease = file("$dir_progruard/proguard.txt")
+                    if (proguardRelease.exists()) {
+                        proguardRelease.delete()
+                        proguardRelease.createNewFile()
+                    }
+
+                    embeddedAarDirs.each { aarPath ->
+                        try {
+                            def proguardLibFile = file("$aarPath/proguard.txt")
+                            log("--->AAR proguard: "+ proguardLibFile )
+                            if (proguardLibFile.exists()) {
+                                proguardRelease.append(proguardLibFile.text)
+                                proguardRelease.append("\n")
+                            }
+                        } catch (Exception e) {
+                            e.printStackTrace()
+                            throw e
+                        }
+                    }
+                }
+                tasks.getByName(taskEmbedResources).dependsOn taskEmbedProguard*/
+
+
+                //6 将AAR下的class.jar打包到新的class中
+                def taskEmbedClassJar ="taskEmbedClassJar"+ productType
+                tasks.maybeCreate(taskEmbedClassJar).doLast {
+                    log("-->Task "+ taskEmbedClassJar +" ---> classes.jar")
+                    log "-->To: $dir_classs"
+                    embeddedAarDirs.each { aarPath ->
+                        FileTree aarFileTree = fileTree(dir: aarPath)
+                        def aarFile = aarFileTree.files.find { it.name.contains("classes.jar") }
+                        if (aarFile != null){
+                            log "-->Copy : $aarFile"
+                            copy {
+                                from zipTree(aarFile)
+                                into dir_classs
+                            }
+                        }
+                    }
+                }
+                tasks.getByName("transformClassesAndResourcesWithSyncLibJarsFor${productType}").dependsOn taskEmbedClassJar
+                tasks.getByName(taskEmbedClassJar).dependsOn tasks.getByName("compile${productType}JavaWithJavac")
+
+                // generateRJava.dependsOn compileReleaseJavaWithJavac
+
+                //collectRClass.dependsOn tasks.getByName("transformClassesAndResourcesWithSyncLibJarsFor${productType}")
+
+                //将AAR下的class.jar打包到新的class中
+
+                def taskGeneratedRJava ="taskGeneratedRJava"+ productType
+                tasks.maybeCreate(taskGeneratedRJava).doFirst{
+
+                    // 先删除原有的生成文件,只有先删掉这个,才会每次重新生成
+                    delete file("${dir_fataar}/${archiveNameOfRClasses}")
+                    delete file("$dir_R_class/")
+                    delete file("$dir_R_src/")
+                    //从各个R.txt中重新构建各个Module的R.java文件
+
+                }.doLast{
+                    log("-->Task "+ taskGeneratedRJava +" doLast")
+                    log("--> generatedRJava ")
+                    generatedRJava(dir_R_src,embeddedAarDirs);
+                }
+
+
+                //统合配置R.jar包 , 编译R关联jar并导出在 dir_exter_jar 目录创建以后
+                def taskCollectRClass ="taskCollectRClass"+ productType
+                def taskJava = tasks.create(taskCollectRClass,JavaCompile.class){
+
+                    source = fileTree(dir: "$dir_R_src", include: '**/*.java')
+                    sourceCompatibility = '1.8'
+                    targetCompatibility = '1.8'
+                    destinationDir file(dir_R_class)
+                    classpath = files("$dir_R_jar")
+
+                    log("--> Task "+ taskCollectRClass +" JavaCompile")
+                    log "--> from : $source.asPath "
+                    log("--> destinationDir: $dir_R_class" )
+
+                    doFirst{
+                        log("--> Task "+ taskCollectRClass)
+                        log "--> from : $source.asPath == destinationDir: $dir_R_class"
+                        log("-->copy Collect RClass: $dir_R_jar ")
+                        //log(" huan 111 "+ getClasspath().asPath)
+                        copy {
+                            from zipTree("$dir_R_jar/R.jar")
+                            into "$dir_R_jar"
+                        }
+                    }
+                }
+                .dependsOn(taskGeneratedRJava)
+                        .dependsOn tasks.getByName("transformClassesAndResourcesWithSyncLibJarsFor${productType}")
+
+                def taskEmbedRClass ="taskEmbedRClass"+ productType
+                tasks.create(taskEmbedRClass,Jar.class){
+                    log("--> Task "+ taskEmbedRClass +" Jar")
+                    archiveName archiveNameOfRClasses
+                    destinationDir file("$dir_fataar")
+                    from dir_R_class
+                }.doFirst{
+                    log("-->Task "+ taskEmbedRClass +" doFirst")
+                    log "-->from : $dir_R_class == destinationDir: $dir_exter_jar"
+
+                }.doLast{
+                    log("-->Task "+ taskEmbedRClass +" doLast")
+
+                    log "-->Pack Jar(R*.class): $dir_R_class\n--->To: $dir_exter_jar"
+                    copy {
+                        from dir_fataar
+                        include archiveNameOfRClasses
+                        into dir_exter_jar
+                    }
+                }.dependsOn(taskCollectRClass)
+
+                tasks.getByName(taskEmbedRClass).dependsOn tasks.getByName("transformClassesAndResourcesWithSyncLibJarsFor${productType}")
+
+
+                //配置AAR中libs下的 Jar包导入
+                def taskEmbedJavaJars ="taskEmbedJavaJars"+ productType
+                tasks.maybeCreate(taskEmbedJavaJars).dependsOn(taskEmbedRClass).doLast {
+
+                    log("-->Task "+ taskEmbedJavaJars)
+                    log "-->To: $dir_exter_jar"
+                    //增加Module所依赖的jar
+                    embeddedAarDirs.each { aarPath ->
+                        // Copy all additional & embedded jar files to bundle lib
+                        FileTree extraJars = fileTree(dir: aarPath, include: '*.jar', exclude: 'classes.jar')
+                        extraJars += fileTree(dir: "$aarPath/libs", include: '*.jar')
+
+                        copy {
+                            if (extraJars.size() + embeddedJars.size() > 0) {
+
+                                extraJars.each { fileItem ->
+                                    log "Copy : "+ fileItem.absolutePath
+                                }
+                                if (embeddedJars.size() > 0) {
+                                    log "Copy :"+ embeddedJars
+                                }
+                            }
+                            from extraJars, embeddedJars
+                            into dir_exter_jar
+                        }
+                    }
+                }
+                tasks.getByName("bundle${productType}Aar").dependsOn taskEmbedJavaJars
+                log("Embedded --> "+ tasks.getByName("bundle${productType}Aar"))
+
+
+
+                //
+//        bundleReleaseAar.dependsOn copyEmbedJars
+//        copyEmbedJars.dependsOn transformClassesAndResourcesWithSyncLibJarsForRelease
+
+                // If proguard is enabled, run the tasks that bundleRelease should depend on before proguard
+                if (tasks.findByPath('proguardRelease') != null) {
+                    // proguardRelease.dependsOn embedJavaJars
+                } else if (tasks.findByPath('transformClassesAndResourcesWithProguardForRelease') != null) {
+                    // transformClassesAndResourcesWithProguardForRelease.dependsOn embedJavaJars
+                }
+            }
+        })
+    })
+}
+
+
+private void generatedRJava(dir_R,embeddedAarDirs){
+    log("-->Task RJava")
+    // Now generate the R.java file for each embedded dependency
+
+    def export_package_name = "com.huan.exportaar"
+
+    // 取包名,修改新生成的R.java的包名
+    def mainManifestFile = android.sourceSets.main.manifest.srcFile
+
+    log("mainfile  "+mainManifestFile)
+
+    if (mainManifestFile.exists()) {
+        export_package_name = new XmlParser().parse(mainManifestFile).@package
+    }
+    log("-->pkg :$export_package_name --- mainManifestFile : $mainManifestFile")
+
+    embeddedAarDirs.each { aarPath ->
+
+        def manifestFile = file("$aarPath/AndroidManifest.xml")
+
+        if (manifestFile.exists()) {
+            def aarPackageName = new XmlParser().parse(manifestFile).@package
+
+            log("--- R pkg $aarPackageName")
+
+            String packagePath = aarPackageName.replace('.', '/')
+
+            // Generate the R.java file and map to current project's R.java
+            // This will recreate the class file
+            // 生成新的R文件
+            def rTxt = file("$aarPath/R.txt")
+            log("--- R path  $rTxt")
+            def rMap = new ConfigObject()
+
+            if (rTxt.exists()) {
+                rTxt.eachLine {
+                    line ->
+                        //noinspection GroovyUnusedAssignment
+                        def (type1, subclass, name, value) = line.tokenize(' ')
+                        rMap[subclass].putAt(name, type1)
+                }
+            }
+
+            def sb = "package $aarPackageName;" << '\n\n'
+            sb << 'public final class R {' << '\n'
+
+            rMap.each {
+                subclass, values ->
+                    sb << "  public static final class $subclass {" << '\n'
+                    values.each {
+                        name, type1 ->
+                            sb << "    public static $type1 $name = ${export_package_name}.R.${subclass}.${name};" << '\n'
+                    }
+                    sb << "  }" << '\n'
+            }
+            sb << '}' << '\n'
+            def r_src_path ="$dir_R/$packagePath"
+            mkdir(r_src_path)
+            file("$r_src_path/R.java").write(sb.toString())
+
+            log("Generated R File: $r_src_path/R.java")
+
+        }
+    }
+}
+
+
+private void mergeManifestFile(dir_fataar,dir_manifest,dir_manifest_aapt,embeddedAarDirs){
+
+
+    ILogger mLogger = new MiLogger()
+    List libraryManifests = new ArrayList<>()
+
+    embeddedAarDirs.each { aarPath ->
+
+        File dependencyManifest = file("$aarPath/AndroidManifest.xml")
+        log "-->AAR Manifest :$dependencyManifest"
+
+        if (!libraryManifests.contains(dependencyManifest) && dependencyManifest.exists()) {
+            libraryManifests.add(dependencyManifest)
+        }
+    }
+
+    File reportFile = file("${dir_fataar}/embedManifestReport.txt")
+    File origManifest = file("${dir_manifest}/AndroidManifest.xml")
+    File copyManifest = file("${dir_fataar}/AndroidManifest.orig.xml")
+    File aaptManifest = file("$dir_manifest_aapt/AndroidManifest.xml")
+
+    log "--> reportFile  ${reportFile.absolutePath}"
+    log "--> copyManifest  ${copyManifest.absolutePath}"
+    log "--> origManifest  ${origManifest.absolutePath}"
+    log "--> aaptManifest  ${aaptManifest.absolutePath}"
+
+    if (!origManifest.exists()) {
+        new Exception("Embeded Manifest Not Exist!!!");
+    }
+
+    copy {
+        from origManifest.parentFile
+        into copyManifest.parentFile
+        include origManifest.name
+        rename(origManifest.name, copyManifest.name)
+    }
+
+    try {
+        Invoker manifestMergerInvoker = ManifestMerger2.newMerger(copyManifest, mLogger, MergeType.APPLICATION)
+
+        manifestMergerInvoker.addLibraryManifests(libraryManifests.toArray(new File[libraryManifests.size()]))
+
+        //manifestMergerInvoker.setPlaceHolderValues(placeHolders)
+        manifestMergerInvoker.setMergeReportFile(reportFile)
+
+        MergingReport mergingReport = manifestMergerInvoker.merge()
+
+        mLogger.info("Merging result:" + mergingReport.getResult())
+        MergingReport.Result result = mergingReport.getResult()
+        switch (result) {
+            case MergingReport.Result.WARNING:
+                mergingReport.log(mLogger)
+
+            case MergingReport.Result.SUCCESS:
+                XmlDocument xmlDocument = mergingReport.getMergedXmlDocument(MergingReport.MergedManifestKind.MERGED)
+                try {
+                    String annotatedDocument = mergingReport.getActions().blame(xmlDocument)
+                    mLogger.verbose(annotatedDocument)
+                } catch (Exception e) {
+                    mLogger.error(e, "cannot print resulting xml")
+                }
+                saveManifest(xmlDocument, origManifest)
+                mLogger.info("Merged manifest to " + origManifest)
+                if (aaptManifest.exists()) {
+                    PlaceholderEncoder.visit(xmlDocument)
+                    saveManifest(xmlDocument, aaptManifest)
+                    mLogger.info("Merged aapt manifest to " + aaptManifest)
+                }
+                break
+            case MergingReport.Result.ERROR:
+                mergingReport.log(mLogger)
+                throw new RuntimeException(mergingReport.getReportString())
+            default:
+                throw new RuntimeException("Unhandled result type : " + mergingReport.getResult())
+        }
+    } catch (RuntimeException e) {
+        // Unacceptable error
+        e.printStackTrace()
+        throw new RuntimeException(e)
+    }
+}
+
+
+
+def  structureAAR( productName,artifact,embeddedAarDirs,embeddedJars){
+
+    if (!file(artifact.file.absolutePath).exists()) {
+        log("** structureAAR file not exists !!! ")
+        return
+    }
+
+    if (artifact.type == 'aar') {
+        //a03  AAR的解压目录  gradle3.4 之后网上说的几个文件夹都改掉了
+        //所以这里需要自己解压并拷贝到指定目录 fat-aar/aar_name
+        def aarNamePath = "$dir_fataar/${artifact.name}"
+
+        //标记解压路径集合
+        if (!embeddedAarDirs.contains(aarNamePath)) {
+            //解压并拷贝
+            copy {
+                from zipTree( artifact.file.absolutePath)
+                into aarNamePath
+            }
+
+            embeddedAarDirs.add(aarNamePath)
+        }
+        log("structureAAR ziptree to: $aarNamePath")
+
+    } else if (artifact.type == 'jar') {
+        //a04 Jar文件直接标记到Jar集合
+        if (!embeddedJars.contains(artifact.file)) {
+            embeddedJars.add(artifact.file)
+        }
+    } else {
+        log("Unsupported Type: ${artifact.type}")
+        throw new Exception("Unsupported Type: ${artifact.type}")
+    }
+}
+
+private void saveManifest(XmlDocument xmlDocument, File out) {
+    log "--> saveManifest"
+    try {
+        Files.write(xmlDocument.prettyPrint(), out, Charsets.UTF_8)
+    } catch (IOException e) {
+        throw new RuntimeException(e)
+    }
+}
+
+class MiLogger implements ILogger {
+    @Override
+    void error(
+            @com.android.annotations.Nullable Throwable t,
+            @com.android.annotations.Nullable String msgFormat, Object... args) {
+        System.err.println(String.format("[FAT-AAR] --- ERROR : " + msgFormat, args))
+        if (t) t.printStackTrace(System.err)
+    }
+
+    @Override
+    void warning(@NonNull String msgFormat, Object... args) {
+        System.err.println(String.format("[FAT-AAR]--- WARNING : " + msgFormat, args))
+    }
+
+    @Override
+    void info(@NonNull String msgFormat, Object... args) {
+        System.out.println(String.format("[FAT-AAR]--- INFO : " + msgFormat, args))
+    }
+
+    @Override
+    void verbose(@NonNull String msgFormat, Object... args) {
+        // System.out.println(String.format("========== DEBUG : " + msgFormat, args))
+    }
+}

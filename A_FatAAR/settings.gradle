@@ -1,0 +1,1 @@
+include ':app', ':modelaar', ':modelproject', ':modellocal-release', ':modellocal_code'

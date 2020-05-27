@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/A_FatAAR.iml" filepath="$PROJECT_DIR$/A_FatAAR.iml" />
+      <module fileurl="file://$PROJECT_DIR$/app/app.iml" filepath="$PROJECT_DIR$/app/app.iml" />
+      <module fileurl="file://$PROJECT_DIR$/modelaar/modelaar.iml" filepath="$PROJECT_DIR$/modelaar/modelaar.iml" />
+      <module fileurl="file://$PROJECT_DIR$/modellocal-release/modellocal-release.iml" filepath="$PROJECT_DIR$/modellocal-release/modellocal-release.iml" />
+      <module fileurl="file://$PROJECT_DIR$/modellocal_code/modellocal_code.iml" filepath="$PROJECT_DIR$/modellocal_code/modellocal_code.iml" />
+      <module fileurl="file://$PROJECT_DIR$/modelproject/modelproject.iml" filepath="$PROJECT_DIR$/modelproject/modelproject.iml" />
+    </modules>
+  </component>
+</project>
