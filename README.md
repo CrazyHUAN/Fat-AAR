@@ -7,6 +7,10 @@
 20200527
 本版本暂只适配  build:gradle:3.4.1  gradle-5.1.1-all.zip
 
+### 问题点备忘    
+1 assemble 需要点击两次才能得到更新的AAR  
+2 proguard 混淆文件没有测试
+
 ----
 
 > 前人经验前排放
